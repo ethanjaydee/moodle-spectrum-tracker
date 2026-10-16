@@ -21,8 +21,13 @@ When new updates are detected, it posts styled notifications directly to your
 - **Differential data tracking:** Maintains a local `seen_items.json` cache to
   prevent duplicate alerts.
 - **Broad selector matching:** Captures direct file downloads, assignment
-  uploads, folders, and announcement discussion threads.
-- **Cloud ready:** Deployable to **GitHub Actions** for free 24/7 background
+  uploads, folders, section pages, and announcement discussion threads.
+- **Embedded announcement detection:** Finds announcement text posted directly
+  in Moodle course sections, including English and Malay headings such as
+  `Announcement`, `Pengumuman`, and `Pengumunan`.
+- **Resilient notifications:** Spaces Discord webhook requests and retries
+  Discord rate-limit responses.
+- **Cloud ready:** Deployable to **GitHub Actions** for free background
   execution without needing your PC to stay powered on.
 
 ## 🛠️ Tech Stack and Prerequisites
@@ -99,6 +104,11 @@ SPECTRUM_PASSWORD=your_actual_password
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
 ```
 
+`SPECTRUM_USERNAME` and `SPECTRUM_PASSWORD` are used to attempt automatic
+Spectrum/SSO login. If automatic login is not available or does not complete,
+the local tracker opens a visible browser so you can finish logging in
+manually.
+
 ### Step 2: Add your target course URLs
 
 Open `tracker.py` and manually add the direct URLs of the Spectrum course
@@ -116,40 +126,44 @@ COURSE_URLS = [
 
 ### Interactive first run (cookie generation)
 
-On the very first run, set `headless=False` in `tracker.py` so Playwright
-opens a visible browser for you to complete any SSO or multi-factor login
-challenges:
-
-```python
-# Inside tracker.py
-browser = p.chromium.launch(headless=False)
-```
-
-Run the tracker:
+Run the tracker normally:
 
 ```bash
 python tracker.py
 ```
 
-1. Complete the Spectrum login in the opened browser window.
-2. Once landed on the main dashboard, return to your terminal and press
-   **Enter**.
-3. Session cookies will be saved to `storage_state.json`.
+When `storage_state.json` is missing, invalid, or expired, the tracker:
 
-### Subsequent runs (headless background mode)
+1. Opens a visible browser window locally.
+2. Attempts the configured username/password and Spectrum SSO flow.
+3. Waits up to five minutes for you to complete any remaining SSO or
+   multi-factor login steps manually.
+4. Saves the successful browser session to `storage_state.json`.
 
-Re-enable headless execution inside `tracker.py`:
+You do not need to edit the `headless` setting in `tracker.py`.
 
-```python
-browser = p.chromium.launch(headless=True)
-```
+### Subsequent runs
 
-Future runs will read `storage_state.json` and execute silently without
-opening a browser GUI window.
+When `storage_state.json` is valid, the tracker loads it and runs headlessly.
+If the saved session has expired, it starts a new local headed login flow and
+replaces the saved session after successful authentication.
 
-## ☁️ 24/7 Cloud Automation (GitHub Actions)
+The tracker checks each configured course for:
 
-To keep the tracker running every 2 hours automatically:
+- Resources, assignments, folders, and files linked through section pages
+- Announcement forums and their discussion topics
+- Announcement text embedded directly in course sections
+
+On the first run with a new `seen_items.json`, existing forum topics are
+recorded as a baseline without sending a notification. New items found on
+later runs are sent to Discord and deduplicated by their
+tracked URL or generated announcement ID. Successful notifications are saved
+immediately to reduce duplicate alerts if a run is interrupted.
+
+## ☁️ Hourly Cloud Automation (GitHub Actions)
+
+The included workflow runs the tracker every hour and can also be started
+manually with **Run workflow**:
 
 1. Go to your GitHub repository **Settings → Secrets and variables →
    Actions**.
@@ -157,7 +171,29 @@ To keep the tracker running every 2 hours automatically:
    - `SPECTRUM_USERNAME`: Your login username
    - `SPECTRUM_PASSWORD`: Your login password
    - `DISCORD_WEBHOOK_URL`: Your full Discord webhook URL
+   - `STORAGE_STATE_BASE64`: A base64-encoded copy of your locally generated
+     `storage_state.json`
 3. Ensure `.github/workflows/tracker.yml` is committed to your `main` branch.
+
+GitHub Actions always runs headlessly, so it cannot complete an interactive
+login. Generate and validate `storage_state.json` locally first, then encode
+its contents and save the result as the `STORAGE_STATE_BASE64` secret. In
+Windows PowerShell, copy the encoded value with:
+
+```powershell
+[Convert]::ToBase64String(
+    [IO.File]::ReadAllBytes("storage_state.json")
+) | Set-Clipboard
+```
+
+The workflow restores this session before running and commits updated
+`seen_items.json` back to the repository. Keep `storage_state.json` out of
+source control; update the `STORAGE_STATE_BASE64` secret whenever the local
+session needs to be refreshed.
+
+If the saved session expires in GitHub Actions, the workflow will stop with a
+login error rather than waiting for manual interaction. Refresh the session
+locally and update the secret.
 
 ## 🛡️ Security and Privacy Checklist
 
