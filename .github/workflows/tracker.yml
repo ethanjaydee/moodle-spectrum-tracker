@@ -51,6 +51,24 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          cp seen_items.json /tmp/seen_items.local.json
+          git fetch origin main
+          git show origin/main:seen_items.json > /tmp/seen_items.remote.json 2>/dev/null || echo "[]" > /tmp/seen_items.remote.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          local_path = Path("/tmp/seen_items.local.json")
+          remote_path = Path("/tmp/seen_items.remote.json")
+          local_items = json.loads(local_path.read_text(encoding="utf-8"))
+          remote_items = json.loads(remote_path.read_text(encoding="utf-8"))
+          merged_items = list(dict.fromkeys(remote_items + local_items))
+          Path("seen_items.json").write_text(
+              json.dumps(merged_items, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          git reset --mixed origin/main
           git add -f seen_items.json
           if ! git diff --cached --quiet; then
             git commit -m "chore: auto-update tracker state [skip ci]"
