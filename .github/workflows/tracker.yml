@@ -2,12 +2,11 @@ name: Moodle Spectrum Tracker 24/7
 
 on:
   schedule:
-    # Runs every hour at minute 0
     - cron: '0 * * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 permissions:
-  contents: write # Grants permissions to commit seen_items.json back to the repo
+  contents: write
 
 jobs:
   run-tracker:
@@ -27,6 +26,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install chromium --with-deps
+
+      - name: Restore Session Cookies from Secret
+        env:
+          STORAGE_STATE_BASE64: ${{ secrets.STORAGE_STATE_BASE64 }}
+        run: |
+          if [ -n "$STORAGE_STATE_BASE64" ]; then
+            echo "$STORAGE_STATE_BASE64" | base64 -d > storage_state.json
+            echo "Restored storage_state.json successfully."
+          fi
 
       - name: Run Spectrum Scraper
         env:
