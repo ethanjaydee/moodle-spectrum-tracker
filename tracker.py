@@ -274,6 +274,10 @@ def _has_valid_storage_state():
     )
 
 
+def _should_force_headless():
+    return os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+
+
 def _is_logged_in(page):
     parsed_url = urlparse(page.url)
     if parsed_url.hostname != "spectrum.um.edu.my":
@@ -452,9 +456,12 @@ def _scrape_course(page, url, seen_items, baseline_announcements):
 def run_tracker():
     seen_items = load_seen_items()
     storage_is_valid = _has_valid_storage_state()
+    force_headless = _should_force_headless()
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=storage_is_valid)
+        browser = playwright.chromium.launch(
+            headless=storage_is_valid or force_headless
+        )
         try:
             try:
                 context = browser.new_context(
@@ -463,9 +470,11 @@ def run_tracker():
             except PlaywrightError:
                 if not storage_is_valid:
                     raise
-                print("Saved session state is invalid; opening a visible browser.")
+                print(
+                    "Saved session state is invalid; starting a fresh browser session."
+                )
                 browser.close()
-                browser = playwright.chromium.launch(headless=False)
+                browser = playwright.chromium.launch(headless=force_headless)
                 context = browser.new_context()
                 storage_is_valid = False
 
@@ -473,10 +482,12 @@ def run_tracker():
             if storage_is_valid:
                 page.goto(COURSE_URLS[0], wait_until="domcontentloaded")
                 if not _is_logged_in(page):
-                    print("Saved session has expired; opening a visible browser.")
+                    print(
+                        "Saved session has expired; starting a fresh browser session."
+                    )
                     context.close()
                     browser.close()
-                    browser = playwright.chromium.launch(headless=False)
+                    browser = playwright.chromium.launch(headless=force_headless)
                     context = browser.new_context()
                     page = context.new_page()
                     _authenticate(page, context)
