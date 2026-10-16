@@ -308,6 +308,8 @@ def _try_automatic_login(page):
         "#username, input[name='username'], input[type='email'], #i0116"
     ).first
     if USERNAME and username_field.is_visible():
+
+        print("Entering username...")
         username_field.fill(USERNAME)
 
         next_button = page.locator(
@@ -316,7 +318,10 @@ def _try_automatic_login(page):
         if next_button.is_visible():
             next_button.click()
             username_submitted = True
-            page.wait_for_load_state("domcontentloaded")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
 
     password_field = page.locator(
         "#password, input[name='password'], input[type='password'], #i0118"
@@ -325,9 +330,10 @@ def _try_automatic_login(page):
         try:
             password_field.wait_for(state="visible", timeout=10000)
         except PlaywrightTimeoutError:
-            print("SSO has not presented a password prompt; waiting for manual login.")
+            print("Password field did not appear; checking for other prompts.")
 
     if PASSWORD and password_field.is_visible():
+        print("Entering password...")
         password_field.fill(PASSWORD)
         submit_button = page.locator(
             "button[type='submit'], #loginbtn, "
@@ -338,7 +344,20 @@ def _try_automatic_login(page):
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=15000)
             except PlaywrightTimeoutError:
-                print("Login response is still loading; checking authentication status.")
+                pass
+
+    # Handle the "Stay signed in?" prompt common in MS SSO
+    stay_signed_in_button = page.locator("#idSIButton9, input[value='Yes']").first
+    if "login.microsoftonline.com" in page.url:
+        try:
+            stay_signed_in_button.wait_for(state="visible", timeout=5000)
+            if stay_signed_in_button.is_visible():
+                print("Clicking 'Yes' on Stay Signed In prompt...")
+                stay_signed_in_button.click()
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except (PlaywrightTimeoutError, PlaywrightError):
+            pass
+
 
 
 def _authenticate(page, context):
@@ -346,10 +365,20 @@ def _authenticate(page, context):
     _try_automatic_login(page)
 
     if not _is_logged_in(page):
+        if _should_force_headless():
+            # In CI environments, we cannot wait for manual interaction.
+            # Taking a screenshot can help debug why automatic login failed.
+            page.screenshot(path="login_failed_debug.png")
+            raise RuntimeError(
+                "Automatic login failed in GitHub Actions. Check your credentials, "
+                "ensure MFA is disabled for this account, or refresh storage_state.json locally."
+            )
+
         print(
             "Please complete Spectrum/SSO login in the open browser, "
             "the tracker will continue after login is detected."
         )
+
         login_deadline = time.monotonic() + 300
         while not _is_logged_in(page) and time.monotonic() < login_deadline:
             page.wait_for_timeout(1000)
@@ -358,6 +387,7 @@ def _authenticate(page, context):
                 "Spectrum login was not detected within five minutes; "
                 "storage_state.json was not saved."
             )
+
 
     page.goto(COURSE_URLS[0], wait_until="domcontentloaded")
     if not _is_logged_in(page):
