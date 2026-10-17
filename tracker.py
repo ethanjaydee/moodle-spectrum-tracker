@@ -85,7 +85,11 @@ AI_CANDIDATE_HINTS = (
 )
 AI_MODELS_TO_TRY = [
     "gemini-flash-latest",
-    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
 ]
 AI_ANNOUNCEMENT_MARKER = "ai-announcement:"
 _ai_client = None
