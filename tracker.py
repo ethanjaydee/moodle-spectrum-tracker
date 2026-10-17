@@ -1,12 +1,15 @@
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from dotenv import load_dotenv
+from google import genai
+from google.genai.errors import ClientError, ServerError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -52,7 +55,44 @@ ANNOUNCEMENT_BASELINE_MARKER = "__spectrum_announcement_baseline_complete__"
 ANNOUNCEMENT_FORUM_KEYWORDS = ("announc", "pengum")
 WEBHOOK_MIN_INTERVAL_SECONDS = 1.0
 WEBHOOK_MAX_ATTEMPTS = 5
+AI_ANNOUNCEMENT_ENABLED = os.getenv(
+    "AI_ANNOUNCEMENT_ENABLED", "false"
+).casefold() == "true"
+AI_ANNOUNCEMENT_THRESHOLD = float(
+    os.getenv("AI_ANNOUNCEMENT_THRESHOLD") or "0.80"
+)
+AI_ANNOUNCEMENT_DRY_RUN = os.getenv(
+    "AI_ANNOUNCEMENT_DRY_RUN", "false"
+).casefold() == "true"
+AI_MAX_CANDIDATE_CHARS = 6000
+AI_MAX_CANDIDATES_PER_PAGE = 20
+AI_CANDIDATE_HINTS = (
+    "important",
+    "notice",
+    "announcement",
+    "attention",
+    "please",
+    "deadline",
+    "exam",
+    "schedule",
+    "reminder",
+    "urgent",
+    "haze",
+    "makluman",
+    "perhatian",
+    "peringatan",
+    "dimaklumkan",
+)
+AI_MODELS_TO_TRY = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+]
+AI_ANNOUNCEMENT_MARKER = "ai-announcement:"
+_ai_client = None
 _last_webhook_sent_at = 0.0
+
+if not 0 <= AI_ANNOUNCEMENT_THRESHOLD <= 1:
+    raise ValueError("AI_ANNOUNCEMENT_THRESHOLD must be between 0 and 1")
 
 
 def load_seen_items():
@@ -74,6 +114,182 @@ def save_seen_items(items):
         json.dumps(items, indent=2),
         encoding="utf-8",
     )
+
+
+def _redact_candidate_text(text):
+    text = re.sub(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[redacted email]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\b\d{7,}\b", "[redacted number]", text)
+    return text[:AI_MAX_CANDIDATE_CHARS].strip()
+
+
+def _get_ai_client():
+    global _ai_client
+
+    if _ai_client is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "AI announcement detection is enabled but GEMINI_API_KEY "
+                "is not configured."
+            )
+        _ai_client = genai.Client(api_key=api_key)
+    return _ai_client
+
+
+def _parse_ai_result(text):
+    if not isinstance(text, str):
+        raise ValueError("AI response was not text")
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned).strip()
+    result = json.loads(cleaned)
+    if not isinstance(result, dict):
+        raise ValueError("AI response was not a JSON object")
+
+    is_announcement = result.get("is_announcement")
+    confidence = result.get("confidence")
+    title = result.get("title")
+    summary = result.get("summary")
+    if not isinstance(is_announcement, bool):
+        raise ValueError("AI response has an invalid is_announcement value")
+    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise ValueError("AI response has an invalid confidence value")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("AI response has an invalid title")
+    if not isinstance(summary, str):
+        raise ValueError("AI response has an invalid summary")
+    return {
+        "is_announcement": is_announcement,
+        "confidence": float(confidence),
+        "title": title.strip()[:256],
+        "summary": summary.strip()[:4000],
+    }
+
+
+def _classify_announcement_with_ai(candidate_text):
+    prompt = f"""You classify Moodle course-page text.
+Return JSON only with exactly these keys:
+{{
+  "is_announcement": true or false,
+  "confidence": number from 0 to 1,
+  "title": "short title",
+  "summary": "brief factual summary"
+}}
+
+Treat notices, warnings, deadlines, schedule changes, exam information,
+administrative messages, and urgent student instructions as announcements,
+even if the heading does not contain the word announcement. Do not classify
+ordinary lecture notes, navigation text, course descriptions, or generic
+instructions as announcements.
+
+Candidate text:
+{_redact_candidate_text(candidate_text)}
+"""
+    client = _get_ai_client()
+    last_error = None
+    for model_name in AI_MODELS_TO_TRY:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            return _parse_ai_result(response.text)
+        except (ServerError, ClientError, json.JSONDecodeError, ValueError) as error:
+            last_error = error
+            print(f"AI announcement model {model_name} failed; trying fallback.")
+
+    raise RuntimeError("All AI announcement models failed.") from last_error
+
+
+def _scrape_ai_announcement_candidates(
+    page, course_name, course_url, seen_items, baseline_announcements
+):
+    if not AI_ANNOUNCEMENT_ENABLED:
+        return
+    if not os.getenv("GEMINI_API_KEY"):
+        print(
+            "AI announcement detection is enabled but GEMINI_API_KEY is "
+            "not configured; skipping AI classification."
+        )
+        return
+    candidates = page.locator("li.section").evaluate_all(
+        """sections => sections.map(section => ({
+            sectionId: section.id || '',
+            sectionTitle: (
+                section.querySelector('.sectionname, h3.sectionname, h3')
+                    ?.innerText || ''
+            ).trim(),
+            text: (section.innerText || '').trim()
+        }))"""
+    )
+
+    classified_count = 0
+    for candidate in candidates:
+        if _is_announcement_forum(candidate["sectionTitle"]):
+            continue
+        text = _redact_candidate_text(candidate["text"])
+        if len(text) < 40:
+            continue
+        if not any(hint in text.casefold() for hint in AI_CANDIDATE_HINTS):
+            continue
+        if classified_count >= AI_MAX_CANDIDATES_PER_PAGE:
+            print("AI announcement candidate limit reached for this page.")
+            break
+        identity = json.dumps(
+            [urlparse(course_url).path, candidate["sectionId"], text],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        candidate_id = AI_ANNOUNCEMENT_MARKER + hashlib.sha256(
+            identity.encode("utf-8")
+        ).hexdigest()
+        if candidate_id in seen_items:
+            continue
+
+        try:
+            result = _classify_announcement_with_ai(text)
+        except RuntimeError as error:
+            print(f"AI announcement classification skipped: {error}")
+            continue
+        classified_count += 1
+        print(
+            f"[AI ANNOUNCEMENT REVIEW] {result['title']} "
+            f"is_announcement={result['is_announcement']} "
+            f"confidence={result['confidence']:.2f}"
+        )
+        if AI_ANNOUNCEMENT_DRY_RUN:
+            continue
+        if baseline_announcements:
+            seen_items.append(candidate_id)
+            save_seen_items(seen_items)
+            continue
+        if (
+            not result["is_announcement"]
+            or result["confidence"] < AI_ANNOUNCEMENT_THRESHOLD
+        ):
+            seen_items.append(candidate_id)
+            save_seen_items(seen_items)
+            continue
+
+        link = f"{course_url}#{candidate['sectionId']}"
+        print(
+            f"[AI ANNOUNCEMENT DETECTED] {result['title']} "
+            f"({result['confidence']:.2f})"
+        )
+        send_discord_alert(
+            result["title"],
+            link,
+            "announcement",
+            f"{course_name} / {candidate['sectionTitle']}",
+            description=result["summary"],
+        )
+        seen_items.append(candidate_id)
+        save_seen_items(seen_items)
 
 
 def send_discord_alert(
@@ -420,6 +636,13 @@ def _scrape_course(page, url, seen_items, baseline_announcements):
         )
     )
     _scrape_embedded_announcements(page, course_name, url, seen_items)
+    _scrape_ai_announcement_candidates(
+        page,
+        course_name,
+        url,
+        seen_items,
+        baseline_announcements,
+    )
 
     _scrape_resource_page(page, course_name, seen_items)
 
@@ -441,6 +664,13 @@ def _scrape_course(page, url, seen_items, baseline_announcements):
             page,
             f"{course_name} / {section_title}",
             seen_items,
+        )
+        _scrape_ai_announcement_candidates(
+            page,
+            f"{course_name} / {section_title}",
+            section_url,
+            seen_items,
+            baseline_announcements,
         )
 
     for forum_url in sorted(forum_urls):

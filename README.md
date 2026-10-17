@@ -25,6 +25,9 @@ When new updates are detected, it posts styled notifications directly to your
 - **Embedded announcement detection:** Finds announcement text posted directly
   in Moodle course sections, including English and Malay headings such as
   `Announcement`, `Pengumuman`, and `Pengumunan`.
+- **AI announcement fallback:** Optionally classifies ambiguous course-section
+  text with Gemini when a human would recognize it as a notice even without an
+  announcement heading.
 - **Resilient notifications:** Spaces Discord webhook requests and retries
   Discord rate-limit responses.
 - **Cloud ready:** Deployable to **GitHub Actions** for free background
@@ -37,7 +40,7 @@ When new updates are detected, it posts styled notifications directly to your
 | Python 3.10 or higher | Application runtime |
 | Playwright (Chromium) | Browser automation |
 | Discord webhooks | Notifications |
-| `playwright`, `requests`, `python-dotenv` | Python dependencies |
+| `playwright`, `requests`, `python-dotenv`, `google-genai` | Python dependencies |
 
 ## 📁 Project Directory Structure
 
@@ -102,12 +105,20 @@ Create a file named `.env` in the root folder, alongside `tracker.py`:
 SPECTRUM_USERNAME=your_student_id@siswa365.um.edu.my
 SPECTRUM_PASSWORD=your_actual_password
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
+GEMINI_API_KEY=your_gemini_api_key_here
+AI_ANNOUNCEMENT_ENABLED=true
+AI_ANNOUNCEMENT_THRESHOLD=0.80
+AI_ANNOUNCEMENT_DRY_RUN=false
 ```
 
 `SPECTRUM_USERNAME` and `SPECTRUM_PASSWORD` are used to attempt automatic
 Spectrum/SSO login. If automatic login is not available or does not complete,
 the local tracker opens a visible browser so you can finish logging in
 manually.
+
+AI fallback classification is disabled unless `AI_ANNOUNCEMENT_ENABLED=true`
+and `GEMINI_API_KEY` is configured. The threshold must be between `0` and `1`;
+`0.80` is the recommended starting value.
 
 ### Step 2: Add your target course URLs
 
@@ -194,6 +205,35 @@ session needs to be refreshed.
 If the saved session expires in GitHub Actions, the workflow will stop with a
 login error rather than waiting for manual interaction. Refresh the session
 locally and update the secret.
+
+## 🤖 AI Announcement Fallback
+
+The normal selectors and announcement-heading rules run first. The optional AI
+fallback then reviews eligible Moodle section text that was not already
+recognized as an announcement. It asks Gemini for strict JSON containing:
+
+- Whether the text is an announcement
+- A confidence score from `0` to `1`
+- A short title and summary
+
+Only results at or above `AI_ANNOUNCEMENT_THRESHOLD` are sent to Discord.
+Candidate IDs and negative classifications are stored in `seen_items.json`,
+so the same unchanged text is not classified on every run. Email addresses and
+long numeric identifiers are redacted before candidate text is sent to Gemini.
+
+Set these GitHub Actions secrets when enabling the feature:
+
+```text
+GEMINI_API_KEY
+AI_ANNOUNCEMENT_ENABLED
+AI_ANNOUNCEMENT_THRESHOLD
+AI_ANNOUNCEMENT_DRY_RUN
+```
+
+AI failures are logged and skipped; deterministic scraping continues. Use
+`AI_ANNOUNCEMENT_ENABLED=false` to run without AI classification. Set
+`AI_ANNOUNCEMENT_DRY_RUN=true` to review AI decisions without Discord sends or
+seen-item updates.
 
 ## 🛡️ Security and Privacy Checklist
 

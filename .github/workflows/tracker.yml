@@ -46,6 +46,10 @@ jobs:
           SPECTRUM_USERNAME: ${{ secrets.SPECTRUM_USERNAME }}
           SPECTRUM_PASSWORD: ${{ secrets.SPECTRUM_PASSWORD }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_ANNOUNCEMENT_ENABLED: ${{ secrets.AI_ANNOUNCEMENT_ENABLED }}
+          AI_ANNOUNCEMENT_THRESHOLD: ${{ secrets.AI_ANNOUNCEMENT_THRESHOLD }}
+          AI_ANNOUNCEMENT_DRY_RUN: ${{ secrets.AI_ANNOUNCEMENT_DRY_RUN }}
         run: python tracker.py
 
       - name: Commit & Save State Updates
