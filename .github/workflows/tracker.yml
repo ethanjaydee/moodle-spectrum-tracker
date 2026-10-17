@@ -46,7 +46,8 @@ jobs:
           SPECTRUM_USERNAME: ${{ secrets.SPECTRUM_USERNAME }}
           SPECTRUM_PASSWORD: ${{ secrets.SPECTRUM_PASSWORD }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: ${{ secrets.MISTRAL_MODEL }}
           AI_ANNOUNCEMENT_ENABLED: ${{ secrets.AI_ANNOUNCEMENT_ENABLED }}
           AI_ANNOUNCEMENT_THRESHOLD: ${{ secrets.AI_ANNOUNCEMENT_THRESHOLD }}
           AI_ANNOUNCEMENT_DRY_RUN: ${{ secrets.AI_ANNOUNCEMENT_DRY_RUN }}

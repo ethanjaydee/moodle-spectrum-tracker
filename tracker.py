@@ -8,8 +8,6 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai.errors import ClientError, ServerError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -64,6 +62,8 @@ AI_ANNOUNCEMENT_THRESHOLD = float(
 AI_ANNOUNCEMENT_DRY_RUN = os.getenv(
     "AI_ANNOUNCEMENT_DRY_RUN", "false"
 ).casefold() == "true"
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL") or "ministral-3b-latest"
 AI_MAX_CANDIDATE_CHARS = 6000
 AI_MAX_CANDIDATES_PER_PAGE = 20
 AI_CANDIDATE_HINTS = (
@@ -83,16 +83,7 @@ AI_CANDIDATE_HINTS = (
     "peringatan",
     "dimaklumkan",
 )
-AI_MODELS_TO_TRY = [
-    "gemini-flash-latest",
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3-flash-preview",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite"
-]
 AI_ANNOUNCEMENT_MARKER = "ai-announcement:"
-_ai_client = None
 _last_webhook_sent_at = 0.0
 
 if not 0 <= AI_ANNOUNCEMENT_THRESHOLD <= 1:
@@ -129,20 +120,6 @@ def _redact_candidate_text(text):
     )
     text = re.sub(r"\b\d{7,}\b", "[redacted number]", text)
     return text[:AI_MAX_CANDIDATE_CHARS].strip()
-
-
-def _get_ai_client():
-    global _ai_client
-
-    if _ai_client is None:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "AI announcement detection is enabled but GEMINI_API_KEY "
-                "is not configured."
-            )
-        _ai_client = genai.Client(api_key=api_key)
-    return _ai_client
 
 
 def _parse_ai_result(text):
@@ -194,20 +171,59 @@ instructions as announcements.
 Candidate text:
 {_redact_candidate_text(candidate_text)}
 """
-    client = _get_ai_client()
-    last_error = None
-    for model_name in AI_MODELS_TO_TRY:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            return _parse_ai_result(response.text)
-        except (ServerError, ClientError, json.JSONDecodeError, ValueError) as error:
-            last_error = error
-            print(f"AI announcement model {model_name} failed; trying fallback.")
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "AI announcement detection is enabled but MISTRAL_API_KEY "
+            "is not configured."
+        )
 
-    raise RuntimeError("All AI announcement models failed.") from last_error
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            MISTRAL_API_URL,
+            headers=headers,
+            json={
+                "model": MISTRAL_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict)
+            )
+        return _parse_ai_result(content)
+    except requests.HTTPError as error:
+        response = error.response
+        status = response.status_code if response is not None else "unknown"
+        detail = response.text[:300] if response is not None else str(error)
+        raise RuntimeError(
+            f"Mistral API rejected the request (HTTP {status}): {detail}"
+        ) from error
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Mistral API request failed for model {MISTRAL_MODEL}: {error}"
+        ) from error
+    except (
+        KeyError,
+        IndexError,
+        TypeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as error:
+        raise RuntimeError(
+            f"Mistral returned an invalid response for model {MISTRAL_MODEL}."
+        ) from error
 
 
 def _scrape_ai_announcement_candidates(
@@ -215,9 +231,9 @@ def _scrape_ai_announcement_candidates(
 ):
     if not AI_ANNOUNCEMENT_ENABLED:
         return
-    if not os.getenv("GEMINI_API_KEY"):
+    if not os.getenv("MISTRAL_API_KEY"):
         print(
-            "AI announcement detection is enabled but GEMINI_API_KEY is "
+            "AI announcement detection is enabled but MISTRAL_API_KEY is "
             "not configured; skipping AI classification."
         )
         return

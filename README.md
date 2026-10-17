@@ -26,8 +26,8 @@ When new updates are detected, it posts styled notifications directly to your
   in Moodle course sections, including English and Malay headings such as
   `Announcement`, `Pengumuman`, and `Pengumunan`.
 - **AI announcement fallback:** Optionally classifies ambiguous course-section
-  text with Gemini when a human would recognize it as a notice even without an
-  announcement heading.
+  text with the direct Mistral API when a human would recognize it as a notice
+  even without an announcement heading.
 - **Resilient notifications:** Spaces Discord webhook requests and retries
   Discord rate-limit responses.
 - **Cloud ready:** Deployable to **GitHub Actions** for free background
@@ -40,7 +40,7 @@ When new updates are detected, it posts styled notifications directly to your
 | Python 3.10 or higher | Application runtime |
 | Playwright (Chromium) | Browser automation |
 | Discord webhooks | Notifications |
-| `playwright`, `requests`, `python-dotenv`, `google-genai` | Python dependencies |
+| `playwright`, `requests`, `python-dotenv` | Python dependencies |
 
 ## 📁 Project Directory Structure
 
@@ -105,7 +105,8 @@ Create a file named `.env` in the root folder, alongside `tracker.py`:
 SPECTRUM_USERNAME=your_student_id@siswa365.um.edu.my
 SPECTRUM_PASSWORD=your_actual_password
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
-GEMINI_API_KEY=your_gemini_api_key_here
+MISTRAL_API_KEY=your_mistral_api_key_here
+MISTRAL_MODEL=ministral-3b-latest
 AI_ANNOUNCEMENT_ENABLED=true
 AI_ANNOUNCEMENT_THRESHOLD=0.80
 AI_ANNOUNCEMENT_DRY_RUN=false
@@ -117,7 +118,7 @@ the local tracker opens a visible browser so you can finish logging in
 manually.
 
 AI fallback classification is disabled unless `AI_ANNOUNCEMENT_ENABLED=true`
-and `GEMINI_API_KEY` is configured. The threshold must be between `0` and `1`;
+and `MISTRAL_API_KEY` is configured. The threshold must be between `0` and `1`;
 `0.80` is the recommended starting value.
 
 ### Step 2: Add your target course URLs
@@ -210,7 +211,8 @@ locally and update the secret.
 
 The normal selectors and announcement-heading rules run first. The optional AI
 fallback then reviews eligible Moodle section text that was not already
-recognized as an announcement. It asks Gemini for strict JSON containing:
+recognized as an announcement. It asks the direct Mistral API for strict JSON
+using `MISTRAL_MODEL` (default: `ministral-3b-latest`).
 
 - Whether the text is an announcement
 - A confidence score from `0` to `1`
@@ -219,12 +221,13 @@ recognized as an announcement. It asks Gemini for strict JSON containing:
 Only results at or above `AI_ANNOUNCEMENT_THRESHOLD` are sent to Discord.
 Candidate IDs and negative classifications are stored in `seen_items.json`,
 so the same unchanged text is not classified on every run. Email addresses and
-long numeric identifiers are redacted before candidate text is sent to Gemini.
+long numeric identifiers are redacted before candidate text is sent to Mistral.
 
 Set these GitHub Actions secrets when enabling the feature:
 
 ```text
-GEMINI_API_KEY
+MISTRAL_API_KEY
+MISTRAL_MODEL
 AI_ANNOUNCEMENT_ENABLED
 AI_ANNOUNCEMENT_THRESHOLD
 AI_ANNOUNCEMENT_DRY_RUN
