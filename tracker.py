@@ -122,13 +122,37 @@ def _redact_candidate_text(text):
     return text[:AI_MAX_CANDIDATE_CHARS].strip()
 
 
-def _parse_ai_result(text):
+def _fallback_announcement_title(candidate_text):
+    if isinstance(candidate_text, str):
+        for line in candidate_text.splitlines():
+            title = " ".join(line.split()).strip(" -:")
+            if title:
+                return title[:256]
+    return "Moodle course update"
+
+
+def _parse_ai_result(text, fallback_title=None):
     if not isinstance(text, str):
         raise ValueError("AI response was not text")
+
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned).strip()
-    result = json.loads(cleaned)
+    fenced_match = re.search(
+        r"```(?:json)?\s*(.*?)\s*```",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced_match:
+        cleaned = fenced_match.group(1).strip()
+
+    object_start = cleaned.find("{")
+    if object_start < 0:
+        raise ValueError("AI response did not contain a JSON object")
+    cleaned = cleaned[object_start:]
+
+    try:
+        result, _ = json.JSONDecoder().raw_decode(cleaned)
+    except json.JSONDecodeError as error:
+        raise ValueError("AI response contained malformed JSON") from error
     if not isinstance(result, dict):
         raise ValueError("AI response was not a JSON object")
 
@@ -138,8 +162,19 @@ def _parse_ai_result(text):
     summary = result.get("summary")
     if not isinstance(is_announcement, bool):
         raise ValueError("AI response has an invalid is_announcement value")
-    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0 <= confidence <= 1
+    ):
         raise ValueError("AI response has an invalid confidence value")
+    if not isinstance(title, str) or not title.strip():
+        title = fallback_title
+        if title:
+            print(
+                "AI response omitted a usable title; using a title derived "
+                "from the course text."
+            )
     if not isinstance(title, str) or not title.strip():
         raise ValueError("AI response has an invalid title")
     if not isinstance(summary, str):
@@ -154,7 +189,8 @@ def _parse_ai_result(text):
 
 def _classify_announcement_with_ai(candidate_text):
     prompt = f"""You classify Moodle course-page text.
-Return JSON only with exactly these keys:
+Return JSON only with exactly these keys. Never omit a key. The title must
+always be a short non-empty string, including when is_announcement is false:
 {{
   "is_announcement": true or false,
   "confidence": number from 0 to 1,
@@ -190,6 +226,7 @@ Candidate text:
                 "model": MISTRAL_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
+                "response_format": {"type": "json_object"},
             },
             timeout=30,
         )
@@ -197,12 +234,16 @@ Candidate text:
         payload = response.json()
         content = payload["choices"][0]["message"]["content"]
         if isinstance(content, list):
-            content = "".join(
+            content_parts = [
                 part.get("text", "")
                 for part in content
-                if isinstance(part, dict)
-            )
-        return _parse_ai_result(content)
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            content = "".join(content_parts)
+        return _parse_ai_result(
+            content,
+            fallback_title=_fallback_announcement_title(candidate_text),
+        )
     except requests.HTTPError as error:
         response = error.response
         status = response.status_code if response is not None else "unknown"
@@ -222,7 +263,8 @@ Candidate text:
         ValueError,
     ) as error:
         raise RuntimeError(
-            f"Mistral returned an invalid response for model {MISTRAL_MODEL}."
+            f"Mistral returned an invalid response for model {MISTRAL_MODEL}: "
+            f"{error}"
         ) from error
 
 
