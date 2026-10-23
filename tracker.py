@@ -49,6 +49,7 @@ FOLDER_LINK_SELECTOR = "a[href*='/mod/folder/view.php']"
 FOLDER_FILE_LINK_SELECTOR = "a[href*='/pluginfile.php/']"
 FORUM_LINK_SELECTOR = "a[href*='/mod/forum/view.php']"
 DISCUSSION_LINK_SELECTOR = "a[href*='/mod/forum/discuss.php']"
+BLOCKED_PAGE_TITLE = "the url you requested has been blocked"
 ANNOUNCEMENT_BASELINE_MARKER = "__spectrum_announcement_baseline_complete__"
 ANNOUNCEMENT_FORUM_KEYWORDS = ("announc", "pengum")
 WEBHOOK_MIN_INTERVAL_SECONDS = 1.0
@@ -512,6 +513,7 @@ def _scrape_resource_page(page, course_name, seen_items):
 
     for folder_url in folder_urls:
         page.goto(folder_url, wait_until="domcontentloaded")
+        _raise_if_blocked(page, folder_url)
         if not _is_logged_in(page):
             raise RuntimeError(
                 "Spectrum session expired while reading a course folder. "
@@ -553,7 +555,10 @@ def _has_valid_storage_state():
 
 
 def _should_force_headless():
-    return os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+    return (
+        os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+        and os.getenv("TRACKER_USE_XVFB", "").lower() != "true"
+    )
 
 
 def _is_logged_in(page):
@@ -568,6 +573,17 @@ def _is_logged_in(page):
         "#username, #password, #i0116, #i0118"
     )
     return not login_fields.first.is_visible()
+
+
+def _raise_if_blocked(page, requested_url):
+    if page.title().strip().casefold() == BLOCKED_PAGE_TITLE:
+        raise RuntimeError(
+            "Spectrum blocked the requested page instead of returning Moodle. "
+            f"Requested URL: {requested_url}; final URL: {page.url}. "
+            "A new storage_state.json cannot bypass this server/network block. "
+            "Open the same URL in a normal browser on the same network; if it "
+            "is blocked there too, contact Spectrum support."
+        )
 
 
 def _try_automatic_login(page):
@@ -640,6 +656,7 @@ def _try_automatic_login(page):
 
 def _authenticate(page, context):
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    _raise_if_blocked(page, LOGIN_URL)
     _try_automatic_login(page)
 
     if not _is_logged_in(page):
@@ -668,6 +685,7 @@ def _authenticate(page, context):
 
 
     page.goto(COURSE_URLS[0], wait_until="domcontentloaded")
+    _raise_if_blocked(page, COURSE_URLS[0])
     if not _is_logged_in(page):
         raise RuntimeError(
             "Spectrum login was not detected after the login step; "
@@ -680,6 +698,7 @@ def _authenticate(page, context):
 
 def _scrape_course(page, url, seen_items, baseline_announcements):
     page.goto(url, wait_until="domcontentloaded")
+    _raise_if_blocked(page, url)
     if not _is_logged_in(page):
         raise RuntimeError(
             "Spectrum session expired while scraping. Run tracker.py again "
@@ -710,6 +729,7 @@ def _scrape_course(page, url, seen_items, baseline_announcements):
 
     for section_url in section_urls:
         page.goto(section_url, wait_until="domcontentloaded")
+        _raise_if_blocked(page, section_url)
         if not _is_logged_in(page):
             raise RuntimeError(
                 "Spectrum session expired while reading a course section. "
@@ -737,6 +757,7 @@ def _scrape_course(page, url, seen_items, baseline_announcements):
 
     for forum_url in sorted(forum_urls):
         page.goto(forum_url, wait_until="domcontentloaded")
+        _raise_if_blocked(page, forum_url)
         if not _is_logged_in(page):
             raise RuntimeError(
                 "Spectrum session expired while reading an announcement forum. "
@@ -782,7 +803,7 @@ def run_tracker():
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
-            headless=storage_is_valid or force_headless
+            headless=force_headless
         )
         try:
             try:
@@ -802,7 +823,16 @@ def run_tracker():
 
             page = context.new_page()
             if storage_is_valid:
-                page.goto(COURSE_URLS[0], wait_until="domcontentloaded")
+                try:
+                    page.goto(COURSE_URLS[0], wait_until="commit")
+                except PlaywrightTimeoutError as error:
+                    raise RuntimeError(
+                        "GitHub Actions could not start loading the first "
+                        f"Spectrum course URL: {COURSE_URLS[0]}. "
+                        "The runner may be blocked by Spectrum or unable to "
+                        "complete the Microsoft SSO redirect."
+                    ) from error
+                _raise_if_blocked(page, COURSE_URLS[0])
                 if not _is_logged_in(page):
                     print(
                         "Saved session has expired; starting a fresh browser session."

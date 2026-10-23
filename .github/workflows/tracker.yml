@@ -51,7 +51,8 @@ jobs:
           AI_ANNOUNCEMENT_ENABLED: ${{ secrets.AI_ANNOUNCEMENT_ENABLED }}
           AI_ANNOUNCEMENT_THRESHOLD: ${{ secrets.AI_ANNOUNCEMENT_THRESHOLD }}
           AI_ANNOUNCEMENT_DRY_RUN: ${{ secrets.AI_ANNOUNCEMENT_DRY_RUN }}
-        run: python tracker.py
+          TRACKER_USE_XVFB: "true"
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" python tracker.py
 
       - name: Commit & Save State Updates
         run: |
