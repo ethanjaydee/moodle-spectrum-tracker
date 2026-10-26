@@ -30,9 +30,6 @@ When new updates are detected, it posts styled notifications directly to your
   even without an announcement heading.
 - **Resilient notifications:** Spaces Discord webhook requests and retries
   Discord rate-limit responses.
-- **Cloud ready:** Deployable to **GitHub Actions** for free background
-  execution without needing your PC to stay powered on.
-
 ## 🛠️ Tech Stack and Prerequisites
 
 | Component | Used for |
@@ -46,10 +43,6 @@ When new updates are detected, it posts styled notifications directly to your
 
 ```text
 moodle-spectrum-tracker/
-│
-├── .github/
-│   └── workflows/
-│       └── tracker.yml          # GitHub Actions 24/7 automation script
 │
 ├── .env                         # Local private credentials (NEVER commit to Git)
 ├── .env.example                 # Safe environment template for repository
@@ -172,41 +165,6 @@ later runs are sent to Discord and deduplicated by their
 tracked URL or generated announcement ID. Successful notifications are saved
 immediately to reduce duplicate alerts if a run is interrupted.
 
-## ☁️ Hourly Cloud Automation (GitHub Actions)
-
-The included workflow runs the tracker every hour and can also be started
-manually with **Run workflow**:
-
-1. Go to your GitHub repository **Settings → Secrets and variables →
-   Actions**.
-2. Click **New repository secret** and add:
-   - `SPECTRUM_USERNAME`: Your login username
-   - `SPECTRUM_PASSWORD`: Your login password
-   - `DISCORD_WEBHOOK_URL`: Your full Discord webhook URL
-   - `STORAGE_STATE_BASE64`: A base64-encoded copy of your locally generated
-     `storage_state.json`
-3. Ensure `.github/workflows/tracker.yml` is committed to your `main` branch.
-
-GitHub Actions always runs headlessly, so it cannot complete an interactive
-login. Generate and validate `storage_state.json` locally first, then encode
-its contents and save the result as the `STORAGE_STATE_BASE64` secret. In
-Windows PowerShell, copy the encoded value with:
-
-```powershell
-[Convert]::ToBase64String(
-    [IO.File]::ReadAllBytes("storage_state.json")
-) | Set-Clipboard
-```
-
-The workflow restores this session before running and commits updated
-`seen_items.json` back to the repository. Keep `storage_state.json` out of
-source control; update the `STORAGE_STATE_BASE64` secret whenever the local
-session needs to be refreshed.
-
-If the saved session expires in GitHub Actions, the workflow will stop with a
-login error rather than waiting for manual interaction. Refresh the session
-locally and update the secret.
-
 ## 🤖 AI Announcement Fallback
 
 The normal selectors and announcement-heading rules run first. The optional AI
@@ -223,7 +181,7 @@ Candidate IDs and negative classifications are stored in `seen_items.json`,
 so the same unchanged text is not classified on every run. Email addresses and
 long numeric identifiers are redacted before candidate text is sent to Mistral.
 
-Set these GitHub Actions secrets when enabling the feature:
+Set these environment variables when enabling the feature:
 
 ```text
 MISTRAL_API_KEY

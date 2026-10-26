@@ -665,7 +665,7 @@ def _authenticate(page, context):
             # Taking a screenshot can help debug why automatic login failed.
             page.screenshot(path="login_failed_debug.png")
             raise RuntimeError(
-                "Automatic login failed in GitHub Actions. Check your credentials, "
+                "Automatic headless login failed. Check your credentials, "
                 "ensure MFA is disabled for this account, or refresh storage_state.json locally."
             )
 
@@ -827,9 +827,9 @@ def run_tracker():
                     page.goto(COURSE_URLS[0], wait_until="commit")
                 except PlaywrightTimeoutError as error:
                     raise RuntimeError(
-                        "GitHub Actions could not start loading the first "
+                        "Headless mode could not start loading the first "
                         f"Spectrum course URL: {COURSE_URLS[0]}. "
-                        "The runner may be blocked by Spectrum or unable to "
+                        "The connection may be blocked by Spectrum or unable to "
                         "complete the Microsoft SSO redirect."
                     ) from error
                 _raise_if_blocked(page, COURSE_URLS[0])
